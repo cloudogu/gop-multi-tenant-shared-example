@@ -1,6 +1,4 @@
-# TODO 
-# FROM {config.contentVariables.images.petclinic}
-FROM ${config.images.petclinic}
+FROM ${config.content.variables.images.petclinic}
 
 # Set permissions to group 0 for openshift compatibility
 # See https://docs.openshift.com/container-platform/4.15/openshift_images/create-images.html#use-uid_create-images

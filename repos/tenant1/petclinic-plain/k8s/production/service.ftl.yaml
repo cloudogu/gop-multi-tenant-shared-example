@@ -5,11 +5,10 @@ metadata:
   labels:
     app: spring-petclinic-plain
 spec:
-  type: <#if config.application.remote>LoadBalancer<#else>NodePort</#if>
+  type: ClusterIP
   ports:
     - name: http
       port: 80
-      nodePort: 30021
       targetPort: http
   selector:
     app: spring-petclinic-plain

@@ -1,9 +1,10 @@
 #!groovy
 
 String getApplication() { 'spring-petclinic-plain' }
-String getConfigRepositoryPRRepo() { '${(config.application.namePrefix?has_content)?then(config.application.namePrefix, "") + "tenant1/gitops"}' }
-String getScmManagerCredentials() { 'scmm-user' }
-String getConfigRepositoryPRBaseUrl() { env.${config.application.namePrefixForEnvVars}SCMM_URL }
+String getConfigRepositoryPRRepo() { '${config.application.namePrefix}argocd/example-apps' }
+String getScmManagerCredentials() { 'scm-user' }
+String getConfigRepositoryPRBaseUrl() { env.${config.application.namePrefixForEnvVars}SCM_URL}
+String getConfigRepositoryPRPrefixedUrl() { env.${config.application.namePrefixForEnvVars}PREFIXED_SCM_URL}
 
 String getDockerRegistryBaseUrl() { env.${config.application.namePrefixForEnvVars}REGISTRY_URL }
 String getDockerRegistryPath() { env.${config.application.namePrefixForEnvVars}REGISTRY_PATH }
@@ -13,11 +14,14 @@ String getDockerRegistryCredentials() { 'registry-user' }
 String getDockerRegistryProxyBaseUrl() { env.${config.application.namePrefixForEnvVars}REGISTRY_PROXY_URL }
 String getDockerRegistryProxyCredentials() { 'registry-proxy-user' }
 </#if>
+
 <#noparse>
-String getCesBuildLibRepo() { configRepositoryPRBaseUrl+"/repo/3rd-party-dependencies/ces-build-lib/" }
+
+String getCesBuildLibRepo() { configRepositoryPRPrefixedUrl+"3rd-party-dependencies/ces-build-lib/" }
+String getGitOpsBuildLibRepo() { configRepositoryPRPrefixedUrl+"3rd-party-dependencies/gitops-build-lib" }
+
 String getCesBuildLibVersion() { '2.5.0' }
-String getGitOpsBuildLibRepo() { configRepositoryPRBaseUrl+"/repo/3rd-party-dependencies/gitops-build-lib" }
-String getGitOpsBuildLibVersion() { '0.7.0'}
+String getGitOpsBuildLibVersion() { '0.8.0'}
 
 loadLibraries()
 
@@ -28,8 +32,18 @@ properties([
 
 node {
 
-    mvn = cesBuildLib.MavenWrapper.new(this)
 </#noparse>
+
+<#if config.content.variables.images?? && config.content.variables.images.maven?has_content>
+    <#if config.registry.twoRegistries>
+        mvn = cesBuildLib.MavenInDocker.new(this, '${config.content.variables.images.maven}', dockerRegistryProxyCredentials)
+    <#else>
+        mvn = cesBuildLib.MavenInDocker.new(this, '${config.content.variables.images.maven}')
+    </#if>
+<#else>
+    mvn = cesBuildLib.MavenWrapper.new(this)
+</#if>
+
 <#if config.jenkins.mavenCentralMirror?has_content>
     mvn.useMirrors([name: 'maven-central-mirror', mirrorOf: 'central', url:  env.${config.application.namePrefixForEnvVars}MAVEN_CENTRAL_MIRROR])
 </#if>
@@ -47,41 +61,33 @@ node {
         }
 
         stage('Test') {
-            // Tests skipped for faster demo and exercise purposes
-            //mvn 'test -Dmaven.test.failure.ignore=true -Dcheckstyle.skip'
+            // Disable database integration tests because they start docker images (which won't work in air-gapped envs and take a lot of time in demos)
+            mvn 'test -Dmaven.test.failure.ignore=true -Dcheckstyle.skip ' +
+            '-Dtest=!org.springframework.samples.petclinic.MySqlIntegrationTests,!org.springframework.samples.petclinic.PostgresIntegrationTests'
         }
 
         String imageName = ""
         stage('Docker') {
             String imageTag = createImageTag()
 </#noparse>
+<#noparse>
+            String pathPrefix = !dockerRegistryPath?.trim() ? "" : "${dockerRegistryPath}/"
+            imageName = "${dockerRegistryBaseUrl}/${pathPrefix}${application}:${imageTag}"
+</#noparse>
 <#if config.registry.twoRegistries>
 <#noparse>
-            String pathPrefix = !dockerRegistryPushPath?.trim() ? "" : "${dockerRegistryPushPath}/"
-            imageName = "${dockerRegistryPushBaseUrl}/${pathPrefix}${application}:${imageTag}"
-            docker.withRegistry("http://${dockerRegistryPullBaseUrl}", dockerRegistryPullCredentials) {
+            docker.withRegistry("https://${dockerRegistryProxyBaseUrl}", dockerRegistryProxyCredentials) {
                 image = docker.build(imageName, '.')
             }
 </#noparse>
 <#else>
 <#noparse>
-            String pathPrefix = !dockerRegistryPath?.trim() ? "" : "${dockerRegistryPath}/"
-                imageName = "${dockerRegistryBaseUrl}/${pathPrefix}${application}:${imageTag}"
-                image = docker.build(imageName, '.')
+            image = docker.build(imageName, '.')
 </#noparse>
 </#if>
-
+<#noparse>
             if (isBuildSuccessful()) {
-<#if config.registry.twoRegistries>
-<#noparse>
-                        docker.withRegistry("https://${dockerRegistryPushBaseUrl}", dockerRegistryPushCredentials) {
-</#noparse>
-<#else>
-<#noparse>
                 docker.withRegistry("https://${dockerRegistryBaseUrl}", dockerRegistryCredentials) {
-</#noparse>
-</#if>
-<#noparse>
                     image.push()
                 }
             } else {
@@ -125,16 +131,16 @@ node {
                         ],
                         stages: [
                                 staging: [
-                                        namespace: '${config.application.namePrefix}tenant1-staging',
+                                        namespace: '${config.application.namePrefix}example-apps-staging',
                                         deployDirectly: true ],
                                 production: [
-                                        namespace: '${config.application.namePrefix}tenant1-production',
+                                        namespace: '${config.application.namePrefix}example-apps-production',
                                         deployDirectly: false ],
                         ]
                 ]
 <#noparse>
-                addSpecificGitOpsConfig(gitopsConfig)
-                
+                gitopsConfig += createSpecificGitOpsConfig()
+
                 deployViaGitops(gitopsConfig)
             } else {
                 echo 'Skipping deploy, because build not successful or not on main branch'
@@ -146,30 +152,15 @@ node {
     junit allowEmptyResults: true, testResults: '**/target/failsafe-reports/TEST-*.xml,**/target/surefire-reports/TEST-*.xml'
 }
 
-/** Initializations might not be needed in a real-world setup, but are necessary for GitOps playground */
-void addSpecificGitOpsConfig(gitopsConfig) {
-    gitopsConfig += [
+/** Initializations might not be needed in a real-world setup, but are necessary to work in an air-gapped env, for example */
+String createSpecificGitOpsConfig() {
+    [
         // In the GitOps playground, we're loading the build libs from our local SCM so it also works in an offline context
         // As the gitops-build-lib also uses the ces-build-lib we need to pass those parameters on.
         // If you can access the internet, you can rely on the defaults, which load the lib from GitHub.
         cesBuildLibRepo: cesBuildLibRepo,
         cesBuildLibVersion: cesBuildLibVersion,
         cesBuildLibCredentialsId: scmManagerCredentials,
-        
-        
-        // The GitOps playground provides parameters for overwriting the build images used by gitops-build-lib, so 
-        // it also works in an offline context.
-        // Those parameters overwrite the following parameters.
-        // If you can access the internet, you can rely on the defaults, which load the images from public registries.
-        buildImages          : [
-</#noparse>
-            helm: '${config.images.helm}',
-            kubectl: '${config.images.kubectl}',
-            kubeval: '${config.images.kubeval}',
-            helmKubeval: '${config.images.helmKubeval}',
-            yamllint: '${config.images.yamllint}'
-<#noparse>
-        ]
     ]
 }
 
@@ -191,7 +182,7 @@ def loadLibraries() {
     // @Library(["github.com/cloudogu/ces-build-lib@${cesBuildLibVersion}", "github.com/cloudogu/gitops-build-lib@${gitOpsBuildLibRepo}"]) _
     //import com.cloudogu.ces.cesbuildlib.*
     //import com.cloudogu.ces.gitopsbuildlib.*
-    
+
     cesBuildLib = library(identifier: "ces-build-lib@${cesBuildLibVersion}",
             retriever: modernSCM([$class: 'GitSCMSource', remote: cesBuildLibRepo, credentialsId: scmManagerCredentials])
     ).com.cloudogu.ces.cesbuildlib

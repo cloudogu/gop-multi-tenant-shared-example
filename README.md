@@ -13,11 +13,12 @@ See also
 Only deploy one static app ([PodInfo](https://github.com/stefanprodan/podinfo/)) per Tenant
 
 ```bash
-VERSION='0.12.1'
+GOP_VERSION=0.15.0
+GOP_CHART_VERSION='0.4.0'
 
-bash <(curl -s "https://raw.githubusercontent.com/cloudogu/gitops-playground/$VERSION/scripts/init-cluster.sh")
+bash <(curl -s "https://raw.githubusercontent.com/cloudogu/gitops-playground/$GOP_VERSION/scripts/init-cluster.sh")
 
-helm upgrade gop -i oci://ghcr.io/cloudogu/gop-helm --version 0.4.0 -n gop --kube-context k3d-gitops-playground --create-namespace --values - <<EOF
+helm upgrade gop -i oci://ghcr.io/cloudogu/gop-helm --version $GOP_CHART_VERSION -n gop --kube-context k3d-gitops-playground --create-namespace --values - <<EOF
 image:
   tag: ${VERSION}
 config:
@@ -26,7 +27,14 @@ config:
   features:
     argocd:
       active: true
-    ingressNginx:
+      values:
+        argo-cd:
+          configs:
+            params:
+              # Otherwise Argo CD will not be able to load tenant apps from their namespaces
+              # TODO this is not set in GOP :/
+              application.namespaces: "*"
+    ingress:
       active: true
   content:
     repos:
@@ -40,6 +48,13 @@ config:
       - tenant1-production
       - tenant1-staging
       - tenant2
+    variables:
+      petclinic:
+        baseDomain: "petclinic.localhost"
+      nginx:
+        baseDomain: "nginx.localhost"
+      images:
+        petclinic: "eclipse-temurin:17-jre-alpine"
 EOF
 ```
 
@@ -55,7 +70,7 @@ If you want to include Building your own app and deploying it there is a more co
 ```bash
 VERSION='0.12.1'
 
-bash <(curl -s "https://raw.githubusercontent.com/cloudogu/gitops-playground/$VERSION/scripts/init-cluster.sh")
+bash <(curl -s "https://raw.githubusercontent.com/cloudogu/gitops-playground/$GOP_VERSION/scripts/init-cluster.sh")
 
 helm upgrade gop -i oci://ghcr.io/cloudogu/gop-helm --version 0.4.0 -n gop --kube-context k3d-gitops-playground --create-namespace --values - <<EOF
 image:
